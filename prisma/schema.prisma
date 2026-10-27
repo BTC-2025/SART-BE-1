@@ -1,0 +1,92 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String?       @unique
+  phone        String?       @unique
+  name         String?
+  avatar       String?
+  role         String        @default("user") // user, driver, admin
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  wallet       Wallet?
+  bookings     Booking[]
+  transactions Transaction[]
+  cartItems    CartItem[]
+}
+
+model Wallet {
+  id           String        @id @default(cuid())
+  userId       String        @unique
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance      Float         @default(15000.0)
+  points       Int           @default(2450)
+  cashback     Float         @default(350.0)
+  updatedAt    DateTime      @updatedAt
+}
+
+model Transaction {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  amount       Float
+  isCredit     Boolean       @default(false)
+  category     String        // Ride, Store, Deposit, Rental, Parking, Driver
+  date         DateTime      @default(now())
+  status       String        @default("Success")
+}
+
+model Booking {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String
+  type         String        // ride, rental, driver, parking, carrier, train, bus, flight, helicopter, mechanic
+  subType      String?       // bike, auto, car, truck, etc.
+  dateTime     DateTime      @default(now())
+  details      String?
+  status       String        @default("Active") // Active, Completed, Cancelled
+  cost         Float
+  pickupLoc    String?
+  dropLoc      String?
+  extraData    String?       // JSON string for vehicle specs, driver info, seats, etc.
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model CartItem {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId    String
+  title        String
+  price        Float
+  quantity     Int           @default(1)
+  image        String?
+  category     String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model DriverLocation {
+  id           String        @id @default(cuid())
+  driverName   String
+  serviceType  String        // bike, auto, car, truck, driver
+  lat          Float
+  lng          Float
+  status       String        @default("available") // available, busy, offline
+  rating       Float         @default(4.8)
+  vehicleModel String?
+  plateNumber  String?
+  phone        String?
+  updatedAt    DateTime      @updatedAt
+}
