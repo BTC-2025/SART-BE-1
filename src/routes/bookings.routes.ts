@@ -115,13 +115,37 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
 
     // Broadcast new ride booking via Socket.io to business captains portal
     try {
+      let parsedExtra: any = {};
+      try {
+        if (booking.extraData) parsedExtra = JSON.parse(booking.extraData);
+      } catch (e) { }
+
+      const cat = (booking.subType || parsedExtra.vehicleType || 'Bike');
+      const formattedCat = cat.charAt(0).toUpperCase() + cat.slice(1);
+
       io.emit('new_incoming_ride', {
         id: booking.id,
-        category: (booking.subType || 'Bike').charAt(0).toUpperCase() + (booking.subType || 'bike').slice(1),
+        category: formattedCat,
         fare: booking.cost,
-        pickupLoc: booking.pickupLoc,
-        dropLoc: booking.dropLoc,
-        customerName: 'Customer',
+        bonus: parsedExtra.bonus || 10,
+        pickupDist: parsedExtra.pickupDist || '0.8 km',
+        pickupTime: parsedExtra.pickupTime || '3 mins',
+        pickupLoc: booking.pickupLoc || 'Current User GPS Location',
+        pickupAddress: parsedExtra.pickupAddress || booking.pickupLoc || 'Pickup Location',
+        dropDist: parsedExtra.distanceKm ? `${parsedExtra.distanceKm} km` : '3.8 km',
+        dropLoc: booking.dropLoc || 'Selected Destination',
+        dropAddress: parsedExtra.dropAddress || booking.dropLoc || 'Destination Location',
+        extraBadge: parsedExtra.extraBadge || 'Live: User Booking',
+        customerName: 'Alex Carter',
+        customerPhone: '+91 98765 43210',
+        paymentMode: parsedExtra.paymentMode || 'Online / UPI',
+        userLat: parsedExtra.userLat || 13.0827,
+        userLng: parsedExtra.userLng || 80.2755,
+        dropLat: parsedExtra.dropLat || 13.0600,
+        dropLng: parsedExtra.dropLng || 80.2200,
+        otp: parsedExtra.otp || '2746',
+        rideStage: 'pickup',
+        status: booking.status,
         isLiveDbBooking: true
       });
     } catch (sockErr) {

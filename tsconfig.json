@@ -2,6 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
     "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./src",
@@ -9,11 +11,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node",
     "resolveJsonModule": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "ignoreDeprecations": "6.0"
+    "emitDecoratorMetadata": true
   },
   "include": ["src/**/*"]
 }

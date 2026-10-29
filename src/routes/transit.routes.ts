@@ -31,7 +31,7 @@ router.get('/train/pnr/:pnr', async (req: AuthenticatedRequest, res: Response) =
     pnr: pnrStr,
     trainNumber: '12709',
     trainName: 'SIMHAPURI SF EXPRESS',
-    source: 'Nellore (NLR)',
+    originStation: 'Nellore (NLR)',
     destination: 'Secunderabad Jn (SC)',
     departureTime: '19:00',
     arrivalTime: '05:45',

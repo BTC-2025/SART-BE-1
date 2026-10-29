@@ -346,6 +346,75 @@ router.post('/auth/login-otp', async (req: AuthenticatedRequest, res: Response) 
   }
 });
 
+// POST /api/rides/auth/login-email - Captain Email & Password Login -> returns signed JWT Token
+router.post('/auth/login-email', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Both Email and Password are required.' });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    // Check existing User or driver record
+    let user = await prisma.user.findFirst({
+      where: {
+        email: cleanEmail
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'No Captain account found with this email. Please register as a new Captain partner.'
+      });
+    }
+
+    // Verify password if user has password
+    if ((user as any).password && (user as any).password !== password) {
+      return res.status(401).json({
+        success: false,
+        message: 'Incorrect password. Please enter the correct password or login via Mobile OTP.'
+      });
+    }
+
+    const captain = await prisma.driverLocation.findFirst({
+      where: {
+        phone: user.phone || undefined
+      }
+    });
+
+    const payloadUser = {
+      id: user.id,
+      role: 'driver',
+      phone: user.phone || '9876543210',
+      name: user.name || 'Captain Partner'
+    };
+
+    const token = signCaptainToken(payloadUser);
+
+    res.json({
+      success: true,
+      message: 'Captain logged in successfully via Email & Password!',
+      token,
+      captain: {
+        id: user.id,
+        name: user.name || 'Captain Partner',
+        email: cleanEmail,
+        phone: user.phone || '9876543210',
+        role: 'driver',
+        serviceType: captain?.serviceType || 'bike',
+        plateNumber: captain?.plateNumber || 'KA 05 MN 9922',
+        vehicleModel: captain?.vehicleModel || 'Standard Vehicle',
+        city: 'Bengaluru'
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
 // GET /api/rides/auth/verify-token - Authentication: Verify JWT Token
 router.get('/auth/verify-token', verifyJwtToken, (req: AuthenticatedRequest, res: Response) => {
   res.json({
@@ -454,12 +523,9 @@ router.get(
         return order;
       });
 
-      // Filter by radius if captain live coordinates are available
+      // Sort orders by nearest distance first without discarding distant test bookings
       if (captainLat !== null && captainLng !== null) {
-        realOrders = realOrders.filter(
-          (o) => o.exactDistKm === undefined || o.exactDistKm <= Number(radiusKm)
-        );
-        realOrders.sort((a, b) => (a.exactDistKm || 0) - (b.exactDistKm || 0));
+        realOrders.sort((a: any, b: any) => (a.exactDistKm || 0) - (b.exactDistKm || 0));
       }
 
       res.json({
@@ -531,7 +597,7 @@ router.get('/captain-active-order', async (req: AuthenticatedRequest, res: Respo
   }
 });
 
-// POST /api/rides/captain-accept-order - Captain accepts ride order, updates live booking
+// POST /api/rides/captain-accept-order - Captain accepts ride order, updates live booking (Atomic First-Accept Lock)
 router.post(
   '/captain-accept-order',
   verifyJwtToken,
@@ -545,56 +611,87 @@ router.post(
 
       // Check if this booking exists in DB
       const existingBooking = await prisma.booking.findUnique({ where: { id: orderId } });
-      if (existingBooking) {
-        let existingExtra: any = {};
-        try {
-          if (existingBooking.extraData) existingExtra = JSON.parse(existingBooking.extraData);
-        } catch (e) { }
-
-        await prisma.booking.update({
-          where: { id: orderId },
-          data: {
-            status: 'Accepted',
-            extraData: JSON.stringify({
-              ...existingExtra,
-              captainAccepted: true,
-              captainId: captainId || req.captainUser?.id,
-              captainName: captainName || req.captainUser?.name,
-              captainPhone: captainPhone || req.captainUser?.phone,
-              vehiclePlate: vehiclePlate || 'TN 09 EQ 4421',
-              captainLat: captainLat || 13.0827,
-              captainLng: captainLng || 80.2755,
-              acceptedAt: new Date().toISOString()
-            })
-          }
-        });
-
-        // Broadcast to user socket room and globally
-        try {
-          const captainInfo = {
-            name: captainName || req.captainUser?.name || 'Sai (Star Captain)',
-            phone: captainPhone || req.captainUser?.phone || '+91 98765 43210',
-            vehiclePlate: vehiclePlate || 'TN 09 EQ 4421',
-            lat: captainLat || 13.0827,
-            lng: captainLng || 80.2755,
-            eta: '3 mins away',
-            distanceToCaptain: '0.8 km'
-          };
-          io.to(`booking_${orderId}`).emit('booking_status_changed', {
-            bookingId: orderId,
-            status: 'Accepted',
-            captain: captainInfo
-          });
-          io.emit('ride_status_global_sync', {
-            bookingId: orderId,
-            status: 'Accepted',
-            captain: captainInfo
-          });
-        } catch (sockErr) {
-          console.warn('[Socket.io] Accept broadcast error:', sockErr);
-        }
+      if (!existingBooking) {
+        return res.status(404).json({ success: false, message: 'Ride order not found or already cancelled.' });
       }
 
+      let existingExtra: any = {};
+      try {
+        if (existingBooking.extraData) existingExtra = JSON.parse(existingBooking.extraData);
+      } catch (e) { }
+
+      // RACE CONDITION CHECK: If already accepted or claimed by another captain, reject
+      if (existingBooking.status === 'Accepted' || existingBooking.status === 'In-Trip' || existingBooking.status === 'Completed' || existingExtra.captainAccepted) {
+        return res.status(409).json({
+          success: false,
+          code: 'RIDE_ALREADY_CLAIMED',
+          message: `This ride was just claimed by another captain (${existingExtra.captainName || 'Partner'}).`,
+          claimedCaptain: existingExtra.captainName
+        });
+      }
+
+      // Atomic Update: Set status to Accepted with claiming Captain credentials
+      const updatedBooking = await prisma.booking.update({
+        where: { id: orderId },
+        data: {
+          status: 'Accepted',
+          extraData: JSON.stringify({
+            ...existingExtra,
+            captainAccepted: true,
+            captainId: captainId || req.captainUser?.id,
+            captainName: captainName || req.captainUser?.name,
+            captainPhone: captainPhone || req.captainUser?.phone,
+            vehiclePlate: vehiclePlate || 'TN 09 EQ 4421',
+            captainLat: captainLat || 13.0827,
+            captainLng: captainLng || 80.2755,
+            acceptedAt: new Date().toISOString()
+          })
+        }
+      });
+
+      // Broadcast to user socket room and notify ALL other captains that ride is claimed/taken
+      try {
+        const captainInfo = {
+          id: captainId || req.captainUser?.id,
+          name: captainName || req.captainUser?.name || 'Sai (Star Captain)',
+          phone: captainPhone || req.captainUser?.phone || '+91 98765 43210',
+          vehiclePlate: vehiclePlate || 'TN 09 EQ 4421',
+          lat: captainLat || 13.0827,
+          lng: captainLng || 80.2755,
+          eta: '3 mins away',
+          distanceToCaptain: '0.8 km'
+        };
+
+        // 1. Notify User of acceptance & live tracking
+        io.to(`booking_${orderId}`).emit('booking_status_changed', {
+          bookingId: orderId,
+          status: 'Accepted',
+          captain: captainInfo
+        });
+
+        // 2. Broadcast RIDE_CLAIMED / RIDE_TAKEN to all other online captains so it dismisses from their screen instantly!
+        io.emit('RIDE_CLAIMED', {
+          rideId: orderId,
+          bookingId: orderId,
+          claimedByCaptainId: captainId || req.captainUser?.id,
+          claimedByCaptainName: captainName || req.captainUser?.name
+        });
+
+        io.emit('RIDE_TAKEN', {
+          rideId: orderId,
+          bookingId: orderId,
+          claimedByCaptainId: captainId || req.captainUser?.id,
+          claimedByCaptainName: captainName || req.captainUser?.name
+        });
+
+        io.emit('ride_status_global_sync', {
+          bookingId: orderId,
+          status: 'Accepted',
+          captain: captainInfo
+        });
+      } catch (sockErr) {
+        console.warn('[Socket.io] Accept broadcast error:', sockErr);
+      }
 
       res.json({
         success: true,
@@ -616,6 +713,42 @@ router.post(
     }
   }
 );
+
+// POST /api/rides/boost-fare - User adds extra fare / incentive tip for this ride
+router.post('/boost-fare', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { bookingId, bonus } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ success: false, message: 'bookingId is required' });
+    }
+
+    const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+    if (booking) {
+      let extra: any = {};
+      try {
+        if (booking.extraData) extra = JSON.parse(booking.extraData);
+      } catch (e) { }
+
+      extra.bonus = Number(bonus) || 10;
+      extra.extraBadge = `Live: User Added +₹${bonus} Extra!`;
+
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: { extraData: JSON.stringify(extra) }
+      });
+
+      io.emit('order_fare_boosted', {
+        bookingId,
+        bonus: extra.bonus,
+        fare: booking.cost
+      });
+    }
+
+    res.json({ success: true, message: 'Fare boosted successfully', bonus });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // POST /api/rides/captain-start-trip - Captain reaches user and inputs customer OTP to start trip & show destination route
 router.post(

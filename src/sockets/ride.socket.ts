@@ -24,6 +24,13 @@ export const setupSocketHandlers = (io: SocketIOServer) => {
       io.emit('live_marker_update', data);
     });
 
+    // Handle user adding more fare / tip to the ride
+    socket.on('boost_ride_fare', (data: { bookingId: string; bonus: number; fare?: number }) => {
+      console.log(`[Socket.io] User boosted fare for booking:`, data.bookingId, `+₹${data.bonus}`);
+      io.emit('order_fare_boosted', data);
+      io.to(`booking_${data.bookingId}`).emit('order_fare_boosted', data);
+    });
+
     // Handle ride status change (e.g. accepted, arriving, in_trip, completed)
     socket.on('ride_status_update', (data: { bookingId: string; status: string; captain?: any }) => {
       console.log(`[Socket.io] Ride status updated:`, data.bookingId, data.status);
