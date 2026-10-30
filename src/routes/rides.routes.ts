@@ -107,7 +107,7 @@ router.get('/vehicles', (req: AuthenticatedRequest, res: Response) => {
     bike: [
       {
         id: 'bike_standard',
-        title: 'Moto / Bike',
+        title: 'Bike',
         minFare: 25,
         baseFare: 20,
         perKm: 7.5,
@@ -115,12 +115,12 @@ router.get('/vehicles', (req: AuthenticatedRequest, res: Response) => {
         waitingChargePerStop: 10,
         badge: 'Pocket Friendly',
         badgeClass: 'popular',
-        image: '/images/red_bike_3d.png',
+        image: '/images/blue_bike.png',
         desc: 'Fastest travel through signals, verified captain, clean helmet provided'
       },
       {
         id: 'bike_plus',
-        title: 'Moto Plus (EV)',
+        title: 'scooty',
         minFare: 30,
         baseFare: 25,
         perKm: 6.5,
@@ -128,7 +128,7 @@ router.get('/vehicles', (req: AuthenticatedRequest, res: Response) => {
         waitingChargePerStop: 15,
         badge: 'Eco Friendly EV',
         badgeClass: 'premium',
-        image: '/images/blue_bike.png',
+        image: '/images/productpage.avif',
         desc: 'Smooth electric ride, zero emissions, instant pickup captain'
       }
     ],
@@ -977,7 +977,7 @@ router.get(
         let extra: any = {};
         try {
           if (b.extraData) extra = JSON.parse(b.extraData);
-        } catch (e) {}
+        } catch (e) { }
 
         const earned = extra.earnedAmount || (b.cost + (extra.bonus || 10));
         todayEarnings += earned;
@@ -1380,6 +1380,91 @@ router.post('/calculate-fuel-fare', (req: AuthenticatedRequest, res: Response) =
       }
     }
   });
+});
+
+// In-memory / file persistent store for requested custom categories
+interface CustomCategoryItem {
+  id: string;
+  name: string;
+  category: string;
+  icon: string;
+  count: string;
+  requestedBy?: string;
+  createdAt: string;
+}
+
+let customCategoriesStore: CustomCategoryItem[] = [
+  {
+    id: 'electric_auto',
+    name: 'Electric Auto',
+    category: 'rides',
+    icon: 'fa-bolt',
+    count: '15+ nearby',
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: 'refrigerated_van',
+    name: 'Refrigerated Van',
+    category: 'carrier',
+    icon: 'fa-snowflake',
+    count: '8+ available',
+    createdAt: new Date().toISOString()
+  }
+];
+
+// GET /api/rides/custom-categories - Get all requested custom vehicle categories
+router.get('/custom-categories', (req, res) => {
+  const { category, query } = req.query;
+  let results = customCategoriesStore;
+  if (category) {
+    results = results.filter(c => c.category.toLowerCase() === String(category).toLowerCase());
+  }
+  if (query) {
+    const q = String(query).toLowerCase().trim();
+    results = results.filter(c => c.name.toLowerCase().includes(q));
+  }
+  res.json({
+    success: true,
+    data: results
+  });
+});
+
+// POST /api/rides/custom-categories - Save a newly requested custom vehicle category
+router.post('/custom-categories', (req, res) => {
+  try {
+    const { name, category, icon, count, requestedBy } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'Vehicle name is required' });
+    }
+
+    const trimmedName = name.trim();
+    const id = trimmedName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const existingIndex = customCategoriesStore.findIndex(c => c.id === id && c.category === (category || 'rides'));
+
+    const newItem: CustomCategoryItem = {
+      id,
+      name: trimmedName,
+      category: category || 'rides',
+      icon: icon || 'fa-truck-ramp-box',
+      count: count || 'Requested',
+      requestedBy: requestedBy || 'User',
+      createdAt: new Date().toISOString()
+    };
+
+    if (existingIndex >= 0) {
+      customCategoriesStore[existingIndex] = newItem;
+    } else {
+      customCategoriesStore.push(newItem);
+    }
+
+    res.json({
+      success: true,
+      message: 'Custom vehicle category registered successfully',
+      data: newItem
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 export default router;
