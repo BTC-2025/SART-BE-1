@@ -1395,14 +1395,6 @@ interface CustomCategoryItem {
 
 let customCategoriesStore: CustomCategoryItem[] = [
   {
-    id: 'electric_auto',
-    name: 'Electric Auto',
-    category: 'rides',
-    icon: 'fa-bolt',
-    count: '15+ nearby',
-    createdAt: new Date().toISOString()
-  },
-  {
     id: 'refrigerated_van',
     name: 'Refrigerated Van',
     category: 'carrier',
