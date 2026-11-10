@@ -547,7 +547,7 @@ router.get('/captain-active-order', async (req: AuthenticatedRequest, res: Respo
     const acceptedBooking = await prisma.booking.findFirst({
       where: {
         type: 'ride',
-        status: { in: ['Accepted', 'In-Trip'] }
+        status: { in: ['Accepted', 'In-Trip', 'Completed'] }
       },
       include: {
         user: true
@@ -662,10 +662,11 @@ router.post(
           distanceToCaptain: '0.8 km'
         };
 
-        // 1. Notify User of acceptance & live tracking
+        // 1. Notify User of acceptance & live tracking with verified ride OTP
         io.to(`booking_${orderId}`).emit('booking_status_changed', {
           bookingId: orderId,
           status: 'Accepted',
+          otp: existingExtra.otp,
           captain: captainInfo
         });
 
@@ -957,11 +958,15 @@ router.post(
   }
 );
 
-// GET /api/rides/captain-earnings - Returns stored today's earnings and completed ride stats from DB
+// GET /api/rides/captain-earnings - Returns stored today's earnings and completed ride stats from DB filtered per registered captain
 router.get(
   '/captain-earnings',
   async (req: AuthenticatedRequest, res: Response) => {
     try {
+      const queryPhone = req.query.phone ? String(req.query.phone).replace(/\D/g, '') : '';
+      const queryCaptainId = req.query.captainId ? String(req.query.captainId) : '';
+      const queryName = req.query.name ? String(req.query.name).trim().toLowerCase() : '';
+
       // Find all completed ride bookings
       const completedBookings = await prisma.booking.findMany({
         where: {
@@ -972,31 +977,78 @@ router.get(
       });
 
       let todayEarnings = 0;
-      let totalCompletedRides = completedBookings.length;
-      const completedList = completedBookings.map((b) => {
+      const todayDateStr = new Date().toISOString().split('T')[0];
+
+      // Filter bookings specific to this registered captain if phone/id/name provided
+      const filteredBookings = completedBookings.filter((b) => {
+        // If no captain identifier provided, return 0 / empty to avoid showing another captain's earnings
+        if (!queryPhone && !queryCaptainId && !queryName) return false;
+        let extra: any = {};
+        try {
+          if (b.extraData) extra = JSON.parse(b.extraData);
+        } catch (e) { }
+
+        const bPhone = extra.captainPhone ? String(extra.captainPhone).replace(/\D/g, '') : '';
+        const bId = extra.captainId ? String(extra.captainId) : '';
+        const bName = extra.captainName ? String(extra.captainName).trim().toLowerCase() : '';
+
+        if (queryPhone && bPhone) {
+          if (bPhone.includes(queryPhone) || queryPhone.includes(bPhone)) return true;
+        }
+        if (queryCaptainId && bId && bId === queryCaptainId) return true;
+        if (queryName && bName && bName.includes(queryName)) return true;
+
+        return false;
+      });
+
+      // Group rides by date for daily breakdown
+      const dailyBreakdown: Record<string, { date: string; rideCount: number; totalAmount: number; rides: any[] }> = {};
+
+      const completedList = filteredBookings.map((b) => {
         let extra: any = {};
         try {
           if (b.extraData) extra = JSON.parse(b.extraData);
         } catch (e) { }
 
         const earned = extra.earnedAmount || (b.cost + (extra.bonus || 10));
-        todayEarnings += earned;
-        return {
+        const bookingDate = (extra.completedAt || b.updatedAt.toISOString()).split('T')[0];
+        if (bookingDate === todayDateStr) {
+          todayEarnings += earned;
+        }
+
+        if (!dailyBreakdown[bookingDate]) {
+          dailyBreakdown[bookingDate] = {
+            date: bookingDate,
+            rideCount: 0,
+            totalAmount: 0,
+            rides: []
+          };
+        }
+        dailyBreakdown[bookingDate].rideCount += 1;
+        dailyBreakdown[bookingDate].totalAmount += earned;
+
+        const rideItem = {
           id: b.id,
           pickupLoc: b.pickupLoc,
           dropLoc: b.dropLoc,
           fare: b.cost,
           bonus: extra.bonus || 10,
           totalEarned: earned,
-          completedAt: extra.completedAt || b.updatedAt
+          completedAt: extra.completedAt || b.updatedAt,
+          date: bookingDate
         };
+        dailyBreakdown[bookingDate].rides.push(rideItem);
+        return rideItem;
       });
+
+      const dailyHistory = Object.values(dailyBreakdown).sort((a, b) => b.date.localeCompare(a.date));
 
       res.json({
         success: true,
         todayEarnings,
-        totalCompletedRides,
-        completedList
+        totalCompletedRides: filteredBookings.length,
+        completedList,
+        dailyHistory
       });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });

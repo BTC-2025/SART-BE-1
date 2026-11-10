@@ -97,6 +97,19 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    let bookingExtraObj: any = {};
+    try {
+      if (typeof extraData === 'object' && extraData !== null) {
+        bookingExtraObj = { ...extraData };
+      } else if (typeof extraData === 'string' && extraData.trim()) {
+        bookingExtraObj = JSON.parse(extraData);
+      }
+    } catch (e) { }
+    // Ensure 100% sync: use the rider's generated OTP if sent, or generate one
+    const generatedRideOtp = bookingExtraObj.otp || Math.floor(1000 + Math.random() * 9000).toString();
+    bookingExtraObj.otp = generatedRideOtp;
+    bookingExtraObj.rideStage = 'pickup';
+
     const booking = await prisma.booking.create({
       data: {
         userId,
@@ -108,10 +121,12 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         cost: numCost,
         pickupLoc,
         dropLoc,
-        extraData: typeof extraData === 'object' ? JSON.stringify(extraData) : extraData,
+        extraData: JSON.stringify(bookingExtraObj),
         status: 'Active'
       }
     });
+
+    console.log('[Ride Booking] Generated OTP for customer:', generatedRideOtp, 'Booking ID:', booking.id);
 
     // Broadcast new ride booking via Socket.io to business captains portal
     try {
@@ -143,7 +158,7 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         userLng: parsedExtra.userLng || 80.2755,
         dropLat: parsedExtra.dropLat || 13.0600,
         dropLng: parsedExtra.dropLng || 80.2200,
-        otp: parsedExtra.otp || '2746',
+        otp: bookingExtraObj.otp || generatedRideOtp,
         rideStage: 'pickup',
         status: booking.status,
         isLiveDbBooking: true
