@@ -124,36 +124,42 @@ const activeUserOtps = new Map<string, string>();
 
 // Helper to resolve currently logged in user from token or query/header
 async function resolveUserFromRequest(req: any) {
-  const token = req.headers['authorization']?.replace('Bearer ', '') || req.query.token || req.body?.token;
-  if (token && activeUserTokens.has(token)) {
-    const session = activeUserTokens.get(token);
-    const dbUser = await prisma.user.findUnique({ where: { id: session.id } });
-    if (dbUser) return { ...dbUser, token };
-    return session;
-  }
-  const userId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
-  if (userId) {
-    const dbUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (dbUser) return dbUser;
-  }
-  const phone = req.query.phone || req.body?.phone;
-  if (phone) {
-    const dbUser = await prisma.user.findFirst({ where: { phone: phone.trim() } });
-    if (dbUser) return dbUser;
-  }
-  const email = req.query.email || req.body?.email;
-  if (email) {
-    const dbUser = await prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } });
-    if (dbUser) return dbUser;
-  }
-  // Return the most recently updated customer user (role === 'user')
-  const latestCustomer = await prisma.user.findFirst({
-    where: { role: 'user' },
-    orderBy: { updatedAt: 'desc' }
-  });
-  if (latestCustomer) return latestCustomer;
+  try {
+    const token = req.headers['authorization']?.replace('Bearer ', '') || req.query.token || req.body?.token;
+    if (token && activeUserTokens.has(token)) {
+      const session = activeUserTokens.get(token);
+      if (session && session.id) {
+        const dbUser = await prisma.user.findUnique({ where: { id: session.id } }).catch(() => null);
+        if (dbUser) return { ...dbUser, token };
+      }
+      return session;
+    }
+    const userId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
+    if (userId) {
+      const dbUser = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
+      if (dbUser) return dbUser;
+    }
+    const phone = req.query.phone || req.body?.phone;
+    if (phone) {
+      const dbUser = await prisma.user.findFirst({ where: { phone: phone.trim() } }).catch(() => null);
+      if (dbUser) return dbUser;
+    }
+    const email = req.query.email || req.body?.email;
+    if (email) {
+      const dbUser = await prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } }).catch(() => null);
+      if (dbUser) return dbUser;
+    }
+    // Return the most recently updated customer user (role === 'user')
+    const latestCustomer = await prisma.user.findFirst({
+      where: { role: 'user' },
+      orderBy: { updatedAt: 'desc' }
+    }).catch(() => null);
+    if (latestCustomer) return latestCustomer;
 
-  return await prisma.user.findFirst();
+    return await prisma.user.findFirst().catch(() => null);
+  } catch (e) {
+    return null;
+  }
 }
 
 app.get('/api/user/profile', async (req: any, res) => {
@@ -163,10 +169,10 @@ app.get('/api/user/profile', async (req: any, res) => {
       return res.json({
         success: true,
         data: {
-          name: 'Kumar',
-          email: 'kumar@gmail.com',
+          name: '',
+          email: '',
           recoveryEmail: '',
-          phone: '8765439821',
+          phone: '',
           birthday: '',
           gender: 'Rather not say',
           avatar: ''
@@ -176,10 +182,10 @@ app.get('/api/user/profile', async (req: any, res) => {
     res.json({
       success: true,
       data: {
-        id: user.id,
-        name: user.name || 'Kumar',
-        email: user.email || 'kumar@gmail.com',
-        phone: user.phone || '8765439821',
+        id: user.id || '',
+        name: user.name || '',
+        email: user.email || '',
+        phone: user.phone || '',
         avatar: user.avatar || '',
         role: user.role || 'user',
         gender: user.gender || 'Rather not say',
@@ -188,7 +194,16 @@ app.get('/api/user/profile', async (req: any, res) => {
       }
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(200).json({
+      success: true,
+      data: {
+        name: '',
+        email: '',
+        phone: '',
+        avatar: '',
+        role: 'user'
+      }
+    });
   }
 });
 
