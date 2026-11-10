@@ -125,15 +125,31 @@ const activeUserOtps = new Map<string, string>();
 // Helper to resolve currently logged in user from token or query/header
 async function resolveUserFromRequest(req: any) {
   try {
-    const token = req.headers['authorization']?.replace('Bearer ', '') || req.query.token || req.body?.token;
-    if (token && activeUserTokens.has(token)) {
-      const session = activeUserTokens.get(token);
-      if (session && session.id) {
-        const dbUser = await prisma.user.findUnique({ where: { id: session.id } }).catch(() => null);
-        if (dbUser) return { ...dbUser, token };
+    const rawToken = req.headers['authorization']?.replace('Bearer ', '') || req.query.token || req.body?.token;
+    
+    // 1. If JWT token provided, verify it
+    if (rawToken) {
+      try {
+        const decoded = jwt.verify(rawToken, JWT_SECRET) as any;
+        if (decoded && decoded.id) {
+          const dbUser = await prisma.user.findUnique({ where: { id: decoded.id } }).catch(() => null);
+          if (dbUser) return { ...dbUser, token: rawToken };
+          return { ...decoded, token: rawToken };
+        }
+      } catch (jwtErr) {
+        // Fallback to activeUserTokens map
       }
-      return session;
+
+      if (activeUserTokens.has(rawToken)) {
+        const session = activeUserTokens.get(rawToken);
+        if (session && session.id) {
+          const dbUser = await prisma.user.findUnique({ where: { id: session.id } }).catch(() => null);
+          if (dbUser) return { ...dbUser, token: rawToken };
+        }
+        return session;
+      }
     }
+
     const userId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
     if (userId) {
       const dbUser = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
@@ -149,14 +165,8 @@ async function resolveUserFromRequest(req: any) {
       const dbUser = await prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } }).catch(() => null);
       if (dbUser) return dbUser;
     }
-    // Return the most recently updated customer user (role === 'user')
-    const latestCustomer = await prisma.user.findFirst({
-      where: { role: 'user' },
-      orderBy: { updatedAt: 'desc' }
-    }).catch(() => null);
-    if (latestCustomer) return latestCustomer;
 
-    return await prisma.user.findFirst().catch(() => null);
+    return null;
   } catch (e) {
     return null;
   }
@@ -282,9 +292,24 @@ app.delete('/api/user/profile/photo', async (req: any, res) => {
 
 // In-memory sessions store token -> user mapping
 
-// Helper to generate a unique session token
-function generateUserToken(userId: string): string {
-  return `sart_tk_${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+// Helper to generate a unique JWT / session token
+function generateUserToken(userOrId: any): string {
+  try {
+    const payload = typeof userOrId === 'object' && userOrId !== null
+      ? {
+          id: userOrId.id,
+          role: userOrId.role || 'user',
+          email: userOrId.email,
+          phone: userOrId.phone,
+          name: userOrId.name
+        }
+      : { id: userOrId, role: 'user' };
+
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+  } catch (e) {
+    const id = typeof userOrId === 'object' ? userOrId?.id : userOrId;
+    return `sart_tk_${id}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
 }
 
 // 1. Send OTP to Mobile
