@@ -151,13 +151,14 @@ router.post('/', async (req: AuthenticatedRequest, res: Response) => {
         dropLoc: booking.dropLoc || 'Selected Destination',
         dropAddress: parsedExtra.dropAddress || booking.dropLoc || 'Destination Location',
         extraBadge: parsedExtra.extraBadge || 'Live: User Booking',
-        customerName: 'Alex Carter',
-        customerPhone: '+91 98765 43210',
+        customerName: parsedExtra.riderName || parsedExtra.customerName || 'Sai',
+        customerPhone: parsedExtra.riderPhone || parsedExtra.customerPhone || '+91 98765 43210',
         paymentMode: parsedExtra.paymentMode || 'Online / UPI',
         userLat: parsedExtra.userLat || 13.0827,
         userLng: parsedExtra.userLng || 80.2755,
         dropLat: parsedExtra.dropLat || 13.0600,
         dropLng: parsedExtra.dropLng || 80.2200,
+        stops: parsedExtra.stops || [],
         otp: bookingExtraObj.otp || generatedRideOtp,
         rideStage: 'pickup',
         status: booking.status,
@@ -199,4 +200,39 @@ router.patch('/:id/status', async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
+// DELETE /api/bookings/:id - Permanently delete a booking
+router.delete('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    await prisma.booking.delete({
+      where: { id }
+    });
+
+    res.json({ success: true, message: 'Booking permanently deleted' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PUT /api/bookings/:id - Update booking details
+router.put('/:id', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const updateData = { ...req.body };
+    delete updateData.id;
+    delete updateData.createdAt;
+
+    const updated = await prisma.booking.update({
+      where: { id },
+      data: updateData
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 export default router;
+
+

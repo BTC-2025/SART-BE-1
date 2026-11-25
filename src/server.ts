@@ -2,6 +2,7 @@ import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
 import { Server as SocketIOServer } from 'socket.io';
 
 import { userContextMiddleware } from './middleware/auth';
@@ -10,7 +11,17 @@ import walletRoutes from './routes/wallet.routes';
 import bookingsRoutes from './routes/bookings.routes';
 import cartRoutes from './routes/cart.routes';
 import ridesRoutes from './routes/rides.routes';
+import captainManagementRoutes from './routes/captainManagement.routes';
 import transitRoutes from './routes/transit.routes';
+import rentalRoutes from './routes/rental.routes';
+import carrierRoutes from './routes/carrier.routes';
+import businessRoutes from './routes/business.routes';
+import parkingRoutes from './routes/parking.routes';
+import driverFleetRoutes from './routes/driverFleet.routes';
+import { busRoutes } from './buses';
+import { trainRoutes } from './trains';
+import { flightRoutes } from './flights';
+import { healthRoutes } from './monitoring';
 import { setupSocketHandlers } from './sockets/ride.socket';
 
 dotenv.config();
@@ -32,7 +43,8 @@ setupSocketHandlers(io);
 
 // Standard Middlewares
 app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(userContextMiddleware);
 
 // Root welcome endpoint
@@ -112,7 +124,20 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/bookings', bookingsRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/rides', ridesRoutes);
+app.use('/api/rides', captainManagementRoutes);
 app.use('/api/transit', transitRoutes);
+app.use('/api/rental/vehicles', rentalRoutes);
+app.use('/api/rental', rentalRoutes);
+app.use('/api/business/vehicles', rentalRoutes);
+app.use('/api/business/carriers', carrierRoutes);
+app.use('/api/carriers', carrierRoutes);
+app.use('/api/business', businessRoutes);
+app.use('/api/parking', parkingRoutes);
+app.use('/api/drivers', driverFleetRoutes);
+app.use('/api/buses', busRoutes);
+app.use('/api/trains', trainRoutes);
+app.use('/api/flights', flightRoutes);
+app.use('/api/health', healthRoutes);
 
 
 // User Profile & Account Settings APIs (Photo upload, Mobile, Password, Basic Info)
@@ -122,11 +147,14 @@ app.use(express.json({ limit: '15mb' }));
 const activeUserTokens = new Map<string, any>();
 const activeUserOtps = new Map<string, string>();
 
+const JWT_SECRET = process.env.JWT_SECRET || 'sart_super_secret_jwt_key_2026';
+const prismaAny = prisma as any;
+
 // Helper to resolve currently logged in user from token or query/header
 async function resolveUserFromRequest(req: any) {
   try {
     const rawToken = req.headers['authorization']?.replace('Bearer ', '') || req.query.token || req.body?.token;
-    
+
     // 1. If JWT token provided, verify it
     if (rawToken) {
       try {
@@ -297,12 +325,12 @@ function generateUserToken(userOrId: any): string {
   try {
     const payload = typeof userOrId === 'object' && userOrId !== null
       ? {
-          id: userOrId.id,
-          role: userOrId.role || 'user',
-          email: userOrId.email,
-          phone: userOrId.phone,
-          name: userOrId.name
-        }
+        id: userOrId.id,
+        role: userOrId.role || 'user',
+        email: userOrId.email,
+        phone: userOrId.phone,
+        name: userOrId.name
+      }
       : { id: userOrId, role: 'user' };
 
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
@@ -409,7 +437,7 @@ app.post('/api/user/auth/register', async (req: any, res) => {
 
     if (existing) {
       // Update with new credentials & phone
-      await prisma['$executeRawUnsafe'.replace('`','')](
+      await prismaAny.$executeRawUnsafe(
         'UPDATE User SET name = ?, phone = ?, password = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?;',
         cleanName, cleanPhone, cleanPassword, existing.id
       );
@@ -418,14 +446,14 @@ app.post('/api/user/auth/register', async (req: any, res) => {
       // Find by phone or create new
       const existingByPhone = await prisma.user.findFirst({ where: { phone: cleanPhone } });
       if (existingByPhone) {
-        await prisma['$executeRawUnsafe'.replace('`','')](
+        await prismaAny.$executeRawUnsafe(
           'UPDATE User SET name = ?, email = ?, password = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?;',
           cleanName, cleanEmail, cleanPassword, existingByPhone.id
         );
         user = await prisma.user.findUnique({ where: { id: existingByPhone.id } });
       } else {
         const cuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        await prisma['$executeRawUnsafe'.replace('`','')](
+        await prismaAny.$executeRawUnsafe(
           'INSERT INTO User (id, email, phone, name, password, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);',
           cuid, cleanEmail, cleanPhone, cleanName, cleanPassword, 'user'
         );
@@ -466,7 +494,7 @@ app.post('/api/user/auth/login-email', async (req: any, res) => {
     const cleanPassword = password.trim();
 
     // Query user including password column
-    const users: any = await prisma['$queryRawUnsafe'.replace('`','')](
+    const users: any = await prismaAny.$queryRawUnsafe(
       'SELECT * FROM User WHERE LOWER(email) = ? LIMIT 1;',
       cleanEmail
     );
@@ -479,7 +507,7 @@ app.post('/api/user/auth/login-email', async (req: any, res) => {
       }
       // If user had no password yet, update it
       if (!user.password) {
-        await prisma['$executeRawUnsafe'.replace('`','')](
+        await prismaAny.$executeRawUnsafe(
           'UPDATE User SET password = ? WHERE id = ?;',
           cleanPassword, user.id
         );
@@ -489,7 +517,7 @@ app.post('/api/user/auth/login-email', async (req: any, res) => {
       const prefix = cleanEmail.split('@')[0];
       const capName = prefix.charAt(0).toUpperCase() + prefix.slice(1);
       const cuid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      await prisma['$executeRawUnsafe'.replace('`','')](
+      await prismaAny.$executeRawUnsafe(
         'INSERT INTO User (id, email, phone, name, password, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);',
         cuid, cleanEmail, '+919876543210', capName, cleanPassword, 'user'
       );
@@ -559,7 +587,7 @@ app.post('/api/user/auth/complete-profile', async (req: any, res) => {
       user = await prisma.user.create({
         data: {
           name: name ? name.trim() : 'Kumar',
-          phone: phone ? phone.trim() : '+919032932985',
+          phone: phone ? phone.trim() : '+918866442200',
           email: email ? email.trim().toLowerCase() : 'kumar@bnxmail.com',
           role: 'user'
         }
@@ -600,6 +628,120 @@ app.post('/api/user/auth/logout', async (req: any, res) => {
     res.json({
       success: true,
       message: 'Logged out successfully, session token revoked'
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================================================================
+// USER ADDRESS MANAGEMENT APIS (Persistent CRUD in SQLite DB)
+// ============================================================================
+
+// GET /api/user/addresses - Fetch all addresses or the default/selected address
+app.get('/api/user/addresses', async (req: any, res) => {
+  try {
+    const user = await resolveUserFromRequest(req);
+    const userId = user?.id || 'guest_user';
+
+    const addresses: any = await prismaAny.$queryRawUnsafe(
+      'SELECT * FROM Address WHERE userId = ? ORDER BY isDefault DESC, createdAt DESC;',
+      userId
+    );
+
+    res.json({
+      success: true,
+      data: addresses || []
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/user/addresses - Add new address
+app.post('/api/user/addresses', async (req: any, res) => {
+  try {
+    const user = await resolveUserFromRequest(req);
+    const userId = user?.id || 'guest_user';
+    const { name, phone, addressLine, isDefault } = req.body;
+
+    if (!name || !addressLine || !phone) {
+      return res.status(400).json({ success: false, message: 'Name, phone, and complete address are required' });
+    }
+
+    const id = `addr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const shouldBeDefault = isDefault !== undefined ? isDefault : true;
+
+    if (shouldBeDefault) {
+      await prismaAny.$executeRawUnsafe(
+        'UPDATE Address SET isDefault = 0 WHERE userId = ?;',
+        userId
+      );
+    }
+
+    await prismaAny.$executeRawUnsafe(
+      'INSERT INTO Address (id, userId, name, phone, addressLine, isDefault, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);',
+      id, userId, name.trim(), phone.trim(), addressLine.trim(), shouldBeDefault ? 1 : 0
+    );
+
+    const created: any = await prismaAny.$queryRawUnsafe(
+      'SELECT * FROM Address WHERE id = ? LIMIT 1;',
+      id
+    );
+
+    res.json({
+      success: true,
+      message: 'Address saved successfully',
+      data: created && created.length > 0 ? created[0] : { id, userId, name, phone, addressLine, isDefault: shouldBeDefault }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// PUT /api/user/addresses/:id - Update existing address
+app.put('/api/user/addresses/:id', async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, addressLine, isDefault } = req.body;
+
+    await prismaAny.$executeRawUnsafe(
+      'UPDATE Address SET name = COALESCE(?, name), phone = COALESCE(?, phone), addressLine = COALESCE(?, addressLine), isDefault = COALESCE(?, isDefault), updatedAt = CURRENT_TIMESTAMP WHERE id = ?;',
+      name ? name.trim() : null,
+      phone ? phone.trim() : null,
+      addressLine ? addressLine.trim() : null,
+      isDefault !== undefined ? (isDefault ? 1 : 0) : null,
+      id
+    );
+
+    const updated: any = await prismaAny.$queryRawUnsafe(
+      'SELECT * FROM Address WHERE id = ? LIMIT 1;',
+      id
+    );
+
+    res.json({
+      success: true,
+      message: 'Address updated successfully',
+      data: updated && updated.length > 0 ? updated[0] : null
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// DELETE /api/user/addresses/:id - Permanently delete address from DB
+app.delete('/api/user/addresses/:id', async (req: any, res) => {
+  try {
+    const { id } = req.params;
+
+    await prismaAny.$executeRawUnsafe(
+      'DELETE FROM Address WHERE id = ?;',
+      id
+    );
+
+    res.json({
+      success: true,
+      message: 'Address permanently deleted'
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });

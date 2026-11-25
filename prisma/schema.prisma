@@ -13,6 +13,7 @@ model User {
   phone        String?       @unique
   name         String?
   avatar       String?
+  password     String?
   role         String        @default("user") // user, driver, admin
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -21,6 +22,19 @@ model User {
   bookings     Booking[]
   transactions Transaction[]
   cartItems    CartItem[]
+  addresses    Address[]
+}
+
+model Address {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  phone       String
+  addressLine String
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Wallet {
