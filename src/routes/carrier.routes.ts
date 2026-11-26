@@ -583,6 +583,15 @@ router.post('/bookings', async (req: Request, res: Response) => {
       distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
     );
 
+    // Automatically set vehicle availability to 0 (On Trip / Already Booked)
+    if (vehicleId || vehicleReg) {
+      await prismaAny.$executeRawUnsafe(`
+        UPDATE CarrierVehicle 
+        SET isAvailable = 0, updatedAt = CURRENT_TIMESTAMP 
+        WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?
+      `, vehicleId, vehicleReg.toLowerCase(), vehicleReg.toLowerCase(), vehicleName.toLowerCase());
+    }
+
     res.status(201).json({
       success: true,
       message: 'Carrier booking created successfully',
@@ -644,6 +653,15 @@ router.patch('/bookings/:id/complete', async (req: Request, res: Response) => {
           completedAt = CURRENT_TIMESTAMP
       WHERE id = ?
     `, driverName || null, driverPhone || null, assignedBay || null, id);
+
+    // Reset carrier vehicle back to Available (isAvailable = 1) so it shows up for user booking again
+    if (booking.vehicleId || booking.vehicleReg) {
+      await prismaAny.$executeRawUnsafe(`
+        UPDATE CarrierVehicle 
+        SET isAvailable = 1, updatedAt = CURRENT_TIMESTAMP 
+        WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ?
+      `, booking.vehicleId, (booking.vehicleReg || '').toLowerCase(), (booking.vehicleReg || '').toLowerCase());
+    }
 
     // Mock SMS / WhatsApp notification triggered
     const notificationPayload = {

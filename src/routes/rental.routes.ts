@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../prisma';
+import { addBusinessNotification } from './business.routes';
 import { slugify, KATPADI_SEED_VEHICLES, INITIAL_RENTAL_VEHICLES } from './rental.seed';
 
 const router = Router();
@@ -848,6 +849,26 @@ router.post('/bookings', async (req: Request, res: Response) => {
     `, bookingId, JSON.stringify(activeBookingPayload), vehicleId, String(vehicleId).toLowerCase(), vehicleName.toLowerCase());
 
     const created: any[] = await prismaAny.$queryRawUnsafe('SELECT * FROM RentalBooking WHERE id = ? LIMIT 1;', id);
+
+    // Automatically trigger business notification for the vehicle booking
+    try {
+      const categoryName = existingVehicle?.category || (existingVehicle?.type === 'bike' ? 'Bikes / Cruisers' : 'Full SUV');
+      const plateStr = existingVehicle?.plate ? ` (${existingVehicle.plate})` : '';
+      addBusinessNotification({
+        type: 'rental_booking',
+        badge: 'New Rental Booking',
+        title: `${customerName} booked a ${categoryName} (${vehicleName})`,
+        customerName: customerName,
+        category: categoryName,
+        vehicleName: `${vehicleName}${plateStr}`,
+        vehiclePlate: existingVehicle?.plate || '',
+        date: pickupDate,
+        time: returnTime ? `${pickupTime} - ${returnTime}` : pickupTime,
+        bookingId: bookingId
+      });
+    } catch (notifErr) {
+      console.warn('⚠️ Could not post auto business notification:', notifErr);
+    }
 
     console.log(`📋 [NEW RENTAL BOOKING CREATED]: ${bookingId} for ${vehicleName} by ${customerName}`);
 

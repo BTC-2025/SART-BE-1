@@ -46,10 +46,14 @@ async function ensureParkingTables() {
         gateInstructions TEXT,
         bookingMode TEXT DEFAULT 'Instant Booking',
         cancellationPolicy TEXT DEFAULT 'Free up to 1 hr before',
+        bookingDetails TEXT,
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    try {
+      await prismaAny.$executeRawUnsafe(`ALTER TABLE ParkingSpot ADD COLUMN bookingDetails TEXT;`);
+    } catch (e) { }
 
     await prismaAny.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS ParkingBooking (
@@ -114,6 +118,7 @@ router.get('/spots', async (req: Request, res: Response) => {
       let vehicleTypesParsed = {};
       let photosParsed: any[] = [];
       let featuresParsed: any[] = [];
+      let bookingDetailsParsed: any = null;
       try {
         if (s.vehicleTypes) vehicleTypesParsed = JSON.parse(s.vehicleTypes);
       } catch (e) { }
@@ -122,6 +127,9 @@ router.get('/spots', async (req: Request, res: Response) => {
       } catch (e) { }
       try {
         if (s.securityFeatures) featuresParsed = JSON.parse(s.securityFeatures);
+      } catch (e) { }
+      try {
+        if (s.bookingDetails) bookingDetailsParsed = JSON.parse(s.bookingDetails);
       } catch (e) { }
 
       // Check vehicle type availability filter
@@ -146,6 +154,9 @@ router.get('/spots', async (req: Request, res: Response) => {
         vehicleTypes: vehicleTypesParsed,
         photos: photosParsed,
         securityFeatures: featuresParsed,
+        bookingDetails: bookingDetailsParsed,
+        activeBooking: bookingDetailsParsed,
+        bookingStatus: bookingDetailsParsed ? 'ALREADY_BOOKED' : 'AVAILABLE',
         isVehicleSupported
       };
     });
@@ -299,6 +310,45 @@ router.put('/spots/:id', async (req: Request, res: Response) => {
     );
 
     res.json({ success: true, message: 'Parking spot updated successfully', id });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PATCH /api/parking/spots/:id/booking - Book or update booking for a parking spot
+router.patch('/spots/:id/booking', async (req: Request, res: Response) => {
+  await ensureParkingTables();
+  try {
+    const { id } = req.params;
+    const body = req.body; // { isAvailable, bookingDetails, status }
+
+    const spotRes: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM ParkingSpot WHERE id = ?`, id);
+    if (!spotRes || spotRes.length === 0) {
+      return res.status(404).json({ success: false, message: 'Parking spot not found' });
+    }
+
+    const spot = spotRes[0];
+    const isAvail = body.isAvailable !== undefined ? (body.isAvailable ? 1 : 0) : (body.bookingDetails ? 0 : 1);
+    const bookingDetailsJson = body.bookingDetails ? JSON.stringify(body.bookingDetails) : (isAvail === 1 ? null : spot.bookingDetails);
+
+    await prismaAny.$executeRawUnsafe(
+      `UPDATE ParkingSpot SET isAvailable = ?, bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+      isAvail,
+      bookingDetailsJson,
+      id
+    );
+
+    res.json({
+      success: true,
+      message: isAvail === 0 ? 'Parking spot booked successfully' : 'Parking spot released',
+      spot: {
+        ...spot,
+        isAvailable: isAvail === 1,
+        bookingDetails: bookingDetailsJson ? JSON.parse(bookingDetailsJson) : null,
+        activeBooking: bookingDetailsJson ? JSON.parse(bookingDetailsJson) : null,
+        bookingStatus: isAvail === 0 ? 'ALREADY_BOOKED' : 'AVAILABLE'
+      }
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

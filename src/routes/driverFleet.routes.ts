@@ -45,10 +45,15 @@ async function ensureDriverTables() {
         location TEXT,
         plate TEXT,
         regId TEXT,
+        bookingDetails TEXT,
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    // Ensure column bookingDetails exists if table already created
+    try {
+      await prismaAny.$executeRawUnsafe(`ALTER TABLE FleetDriver ADD COLUMN bookingDetails TEXT;`);
+    } catch (e) { }
     isDriverTableInitialized = true;
     console.log('✅ FleetDriver table initialized successfully');
   } catch (err: any) {
@@ -98,10 +103,17 @@ router.get('/', async (req: Request, res: Response) => {
         if (d.cannotDriveList) cannotList = JSON.parse(d.cannotDriveList);
       } catch (e) { }
 
+      let bookingInfo = null;
+      try {
+        if (d.bookingDetails) bookingInfo = JSON.parse(d.bookingDetails);
+      } catch (e) { }
+
       return {
         ...d,
         eligibleVehicles: eligibleList,
         cannotDriveList: cannotList,
+        bookingDetails: bookingInfo,
+        status: d.isAvailable ? (d.status || 'Verified') : 'On Trip',
         isAvailable: Boolean(d.isAvailable)
       };
     });
@@ -281,20 +293,62 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// 5. PATCH /api/drivers/:id/availability - Toggle driver active status
-router.patch('/:id/availability', async (req: Request, res: Response) => {
+// 5. PATCH /api/drivers/:id - Update driver availability, status and bookingDetails
+router.patch('/:id', async (req: Request, res: Response) => {
   await ensureDriverTables();
   try {
     const { id } = req.params;
-    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT isAvailable FROM FleetDriver WHERE id = ?`, id);
+    const b = req.body;
+
+    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, id, id.toLowerCase());
     if (!current || current.length === 0) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
 
-    const nextVal = current[0].isAvailable === 1 ? 0 : 1;
-    await prismaAny.$executeRawUnsafe(`UPDATE FleetDriver SET isAvailable = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`, nextVal, id);
+    const target = current[0];
+    const nextAvailable = typeof b.isAvailable === 'boolean'
+      ? (b.isAvailable ? 1 : 0)
+      : (b.status === 'Available' ? 1 : (b.status === 'On Trip' ? 0 : (target.isAvailable === 1 ? 0 : 1)));
 
-    res.json({ success: true, isAvailable: Boolean(nextVal) });
+    const nextStatus = nextAvailable === 1 ? 'Available' : 'On Trip';
+    const bookingDetailsJson = b.bookingDetails !== undefined
+      ? (b.bookingDetails ? JSON.stringify(b.bookingDetails) : null)
+      : (nextAvailable === 1 ? null : target.bookingDetails);
+
+    await prismaAny.$executeRawUnsafe(
+      `UPDATE FleetDriver SET isAvailable = ?, status = ?, bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+      nextAvailable, nextStatus, bookingDetailsJson, target.id
+    );
+
+    res.json({
+      success: true,
+      isAvailable: Boolean(nextAvailable),
+      status: nextStatus,
+      bookingDetails: bookingDetailsJson ? JSON.parse(bookingDetailsJson) : null
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// 5b. PATCH /api/drivers/:id/availability - Toggle driver active status
+router.patch('/:id/availability', async (req: Request, res: Response) => {
+  await ensureDriverTables();
+  try {
+    const { id } = req.params;
+    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, id, id.toLowerCase());
+    if (!current || current.length === 0) {
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+    }
+
+    const target = current[0];
+    const nextVal = target.isAvailable === 1 ? 0 : 1;
+    const nextStatus = nextVal === 1 ? 'Available' : 'On Trip';
+    const bookingDetails = nextVal === 1 ? null : target.bookingDetails;
+
+    await prismaAny.$executeRawUnsafe(`UPDATE FleetDriver SET isAvailable = ?, status = ?, bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`, nextVal, nextStatus, bookingDetails, target.id);
+
+    res.json({ success: true, isAvailable: Boolean(nextVal), status: nextStatus });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
