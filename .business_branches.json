@@ -1,0 +1,79 @@
+{
+  "branches": [
+    {
+      "id": "branch-1",
+      "code": "BR-01",
+      "name": "Main Branch - Chennai",
+      "isPrimary": true,
+      "status": "Active",
+      "owner": "Rajesh Kumar",
+      "email": "rajesh@sart.com",
+      "phone": "+91 98401 55555",
+      "location": "42, Mount Road, Chennai, Tamil Nadu",
+      "city": "Chennai",
+      "image": "/images/branch_chennai.jpg",
+      "fleetSummary": "12 Vehicles (Auto, Bike, Cab, Trucks)"
+    },
+    {
+      "id": "branch-2",
+      "code": "BR-02",
+      "name": "Westside Branch - Bengaluru",
+      "isPrimary": false,
+      "status": "Active",
+      "owner": "Rajesh Kumar",
+      "email": "bengaluru@sart.com",
+      "phone": "+91 98801 22334",
+      "location": "104, 100 Feet Rd, Indiranagar, Bengaluru, Karnataka",
+      "city": "Bengaluru",
+      "image": "/images/branch_bengaluru.jpg",
+      "fleetSummary": "8 Vehicles (Cab, Bike, Cargo)"
+    }
+  ],
+  "activeBranchId": "branch-2",
+  "vehicles": [
+    {
+      "id": "bv-101",
+      "branchId": "branch-1",
+      "name": "Tata Ace Gold",
+      "category": "Truck",
+      "regNumber": "TN-09-BK-1452",
+      "loadCapacity": "900 kg / 0.9 T",
+      "rate": "₹850/trip | ₹22/km",
+      "status": "Available",
+      "image": "/images/carrier_icon_truck.png"
+    },
+    {
+      "id": "bv-102",
+      "branchId": "branch-1",
+      "name": "TVS King Cargo 3-Wheeler",
+      "category": "3-Wheeler Auto",
+      "regNumber": "TN-01-XX-9999",
+      "loadCapacity": "550 kg / 0.55 T",
+      "rate": "₹450/trip | ₹16/km",
+      "status": "Available",
+      "image": "/images/auto_rickshaw_3d.png"
+    },
+    {
+      "id": "bv-103",
+      "branchId": "branch-1",
+      "name": "Mahindra Blazo X 28",
+      "category": "Heavy Freight",
+      "regNumber": "TN-04-MH-2828",
+      "loadCapacity": "28 Tonnes",
+      "rate": "₹9,500/trip | ₹85/km",
+      "status": "Available",
+      "image": "/images/carrier_icon_truck.png"
+    },
+    {
+      "id": "bv-201",
+      "branchId": "branch-2",
+      "name": "Toyota Innova Crysta Cab",
+      "category": "Passenger Cab",
+      "regNumber": "KA-01-CR-8899",
+      "loadCapacity": "7 Passengers",
+      "rate": "₹1,800/day | ₹18/km",
+      "status": "Available",
+      "image": "/images/cab_xl.png"
+    }
+  ]
+}

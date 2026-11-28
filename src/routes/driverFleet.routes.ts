@@ -50,10 +50,22 @@ async function ensureDriverTables() {
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    // Ensure column bookingDetails exists if table already created
-    try {
-      await prismaAny.$executeRawUnsafe(`ALTER TABLE FleetDriver ADD COLUMN bookingDetails TEXT;`);
-    } catch (e) { }
+    // Ensure new pricing columns exist if table already created
+    const pricingCols = [
+      'hourlyRate REAL DEFAULT 120',
+      'dailyRate REAL DEFAULT 800',
+      'weeklyRate REAL DEFAULT 4800',
+      'monthlyRate REAL DEFAULT 18000',
+      'outstationRate REAL DEFAULT 1800',
+      'ratePerKm REAL DEFAULT 14',
+      'baseCharge REAL DEFAULT 120',
+      'advancePercent REAL DEFAULT 25'
+    ];
+    for (const col of pricingCols) {
+      try {
+        await prismaAny.$executeRawUnsafe(`ALTER TABLE FleetDriver ADD COLUMN ${col};`);
+      } catch (e) { }
+    }
     isDriverTableInitialized = true;
     console.log('✅ FleetDriver table initialized successfully');
   } catch (err: any) {
@@ -201,11 +213,14 @@ router.post('/', async (req: Request, res: Response) => {
       mode = 'flight';
     }
 
-    const hourlyRate = mode === 'bike' ? 120 : mode === 'ship' ? 1200 : 200;
-    const dailyRate = mode === 'bike' ? 800 : mode === 'ship' ? 8000 : 1500;
-    const ratePerKm = mode === 'bike' ? 14 : mode === 'ship' ? 649 : 48;
-    const baseCharge = mode === 'bike' ? 120 : mode === 'ship' ? 180000 : 1800;
-    const advancePercent = mode === 'bike' ? 25 : mode === 'ship' ? 35 : 30;
+    const hourlyRate = Number(data.hourlyRate) || (mode === 'bike' ? 120 : mode === 'ship' ? 1200 : 200);
+    const dailyRate = Number(data.dailyRate) || (mode === 'bike' ? 800 : mode === 'ship' ? 8000 : 1500);
+    const weeklyRate = Number(data.weeklyRate) || (dailyRate * 6);
+    const monthlyRate = Number(data.monthlyRate) || (dailyRate * 24);
+    const outstationRate = Number(data.outstationRate) || (mode === 'bike' ? 1200 : mode === 'ship' ? 25000 : 1800);
+    const ratePerKm = Number(data.ratePerKm) || (mode === 'bike' ? 14 : mode === 'ship' ? 649 : 48);
+    const baseCharge = Number(data.baseCharge) || hourlyRate;
+    const advancePercent = Number(data.advancePercent) || (mode === 'bike' ? 25 : mode === 'ship' ? 35 : 30);
 
     const hub = address || 'Chennai / Vellore Logistics Hub';
     const location = address || 'Chennai / Vellore Logistics Hub';
@@ -218,13 +233,15 @@ router.post('/', async (req: Request, res: Response) => {
         eligibleVehicles, cannotDriveList, drivingExperienceYears, dlNumber, dlUploadName,
         aadhaarNumber, aadhaarUploadName, panNumber, panUploadName, pccUploadName,
         emergencyContact, status, rating, isAvailable, mode, hourlyRate, dailyRate,
+        weeklyRate, monthlyRate, outstationRate,
         ratePerKm, baseCharge, advancePercent, hub, location, plate, regId, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `,
       id, name, phone, dob, gender, address, pincode, image, photoFileName,
       eligibleVehiclesJson, cannotDriveListJson, drivingExperienceYears, dlNumber, dlUploadName,
       aadhaarNumber, aadhaarUploadName, panNumber, panUploadName, pccUploadName,
       emergencyContact, status, rating, isAvailable, mode, hourlyRate, dailyRate,
+      weeklyRate, monthlyRate, outstationRate,
       ratePerKm, baseCharge, advancePercent, hub, location, plate, regId
     );
 
@@ -270,6 +287,12 @@ router.put('/:id', async (req: Request, res: Response) => {
         aadhaarNumber = COALESCE(?, aadhaarNumber),
         panNumber = COALESCE(?, panNumber),
         emergencyContact = COALESCE(?, emergencyContact),
+        hourlyRate = COALESCE(?, hourlyRate),
+        dailyRate = COALESCE(?, dailyRate),
+        weeklyRate = COALESCE(?, weeklyRate),
+        monthlyRate = COALESCE(?, monthlyRate),
+        outstationRate = COALESCE(?, outstationRate),
+        baseCharge = COALESCE(?, baseCharge),
         updatedAt = CURRENT_TIMESTAMP
       WHERE id = ?
     `,
@@ -284,6 +307,12 @@ router.put('/:id', async (req: Request, res: Response) => {
       d.aadhaarNumber || null,
       d.panNumber || null,
       d.emergencyContact || null,
+      d.hourlyRate !== undefined ? Number(d.hourlyRate) : null,
+      d.dailyRate !== undefined ? Number(d.dailyRate) : null,
+      d.weeklyRate !== undefined ? Number(d.weeklyRate) : null,
+      d.monthlyRate !== undefined ? Number(d.monthlyRate) : null,
+      d.outstationRate !== undefined ? Number(d.outstationRate) : null,
+      d.baseCharge !== undefined ? Number(d.baseCharge) : (d.hourlyRate !== undefined ? Number(d.hourlyRate) : null),
       id
     );
 
@@ -300,7 +329,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const b = req.body;
 
-    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, id, id.toLowerCase());
+    const idStr = Array.isArray(id) ? id[0] : id;
+    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, idStr, idStr.toLowerCase());
     if (!current || current.length === 0) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
@@ -336,7 +366,8 @@ router.patch('/:id/availability', async (req: Request, res: Response) => {
   await ensureDriverTables();
   try {
     const { id } = req.params;
-    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, id, id.toLowerCase());
+    const idStr = Array.isArray(id) ? id[0] : id;
+    const current: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM FleetDriver WHERE id = ? OR LOWER(name) = ?`, idStr, idStr.toLowerCase());
     if (!current || current.length === 0) {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }

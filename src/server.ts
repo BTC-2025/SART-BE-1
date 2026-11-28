@@ -41,8 +41,13 @@ const io = new SocketIOServer(server, {
 });
 setupSocketHandlers(io);
 
-// Standard Middlewares
-app.use(cors({ origin: '*' }));
+// Standard Middlewares - allow both User (3005) and Business (3007) portals
+app.use(cors({
+  origin: ['http://localhost:3005', 'http://localhost:3007', 'http://localhost:3000', 'http://127.0.0.1:3005', 'http://127.0.0.1:3007'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(userContextMiddleware);

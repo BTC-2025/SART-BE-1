@@ -1,10 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../prisma';
+import { addBusinessNotification } from './business.routes';
 
 const router = Router();
 const prismaAny = prisma as any;
 
 let isTableInitialized = false;
+let didSeedOnce = false;
 
 // Ensure database tables exist
 async function ensureCarrierTables() {
@@ -44,10 +46,19 @@ async function ensureCarrierTables() {
         images TEXT,
         rating REAL DEFAULT 4.9,
         verified INTEGER DEFAULT 1,
+        bookingDetails TEXT,
         createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    try {
+      await prismaAny.$executeRawUnsafe(`ALTER TABLE CarrierVehicle ADD COLUMN bookingDetails TEXT;`);
+    } catch (e) { }
+
+    try {
+      await prismaAny.$executeRawUnsafe(`ALTER TABLE CarrierVehicle ADD COLUMN status TEXT DEFAULT 'Available';`);
+    } catch (e) { }
 
     await prismaAny.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS CarrierBooking (
@@ -94,13 +105,14 @@ async function ensureCarrierTables() {
       );
     `);
 
-    // Ensure only the 1 Bike and 1 Truck added by the owner are present initially
-    await prismaAny.$executeRawUnsafe(`DELETE FROM CarrierVehicle WHERE id IN ('CRG-1003', 'CRG-1004', 'CRG-1005', 'CRG-1006')`);
     const countResult: any[] = await prismaAny.$queryRawUnsafe(`SELECT COUNT(*) as count FROM CarrierVehicle`);
     const count = countResult && countResult[0] ? Number(countResult[0].count) : 0;
 
-    if (count === 0) {
+    if (count === 0 && !didSeedOnce) {
+      didSeedOnce = true;
       await seedInitialCarrierVehicles();
+    } else {
+      didSeedOnce = true;
     }
 
     isTableInitialized = true;
@@ -383,6 +395,189 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// GET all carrier bookings (Must be placed before /:id)
+router.get('/bookings', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const { vehicleId } = req.query;
+    let query = `SELECT * FROM CarrierBooking`;
+    let params: any[] = [];
+    if (vehicleId) {
+      const vId = String(vehicleId).trim();
+      query += ` WHERE vehicleId = ? OR LOWER(vehicleReg) = ? OR LOWER(vehicleName) = ? OR LOWER(vehicleName) LIKE ?`;
+      params.push(vId, vId.toLowerCase(), vId.toLowerCase(), `%${vId.toLowerCase()}%`);
+    }
+    query += ` ORDER BY createdAt DESC`;
+
+    const bookings: any[] = await prismaAny.$queryRawUnsafe(query, ...params);
+    res.json({ success: true, count: bookings.length, bookings });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST create carrier booking (Must be placed before /:id)
+router.post('/bookings', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const b = req.body;
+    const id = b.id || b.bookingId || `CRG-BK-${Date.now().toString().slice(-6)}`;
+    const vehicleId = b.vehicleId || '';
+    const vehicleName = b.vehicleName || 'Commercial Cargo Carrier';
+    const vehicleReg = b.vehicleReg || b.plate || 'IMO 234';
+    const mode = b.mode || 'ship';
+    const customerName = b.customerName || b.senderName || 'Valued Customer';
+    const customerPhone = b.customerPhone || b.senderPhone || b.senderMobile || '+91 98000 00000';
+    const senderType = b.senderType || 'business';
+    const senderGstin = b.senderGstin || '';
+    const senderEmail = b.senderEmail || '';
+    const receiverName = b.receiverName || 'Consignee Logistics';
+    const receiverPhone = b.receiverPhone || b.receiverMobile || '+91 98765 43210';
+    const receiverType = b.receiverType || 'business';
+    const receiverGstin = b.receiverGstin || '';
+    const pickup = b.pickup || 'Pickup Location';
+    const dropLoc = b.dropLoc || b.drop || b.delivery || 'Delivery Location';
+    const pickupAddress = b.pickupAddress || pickup;
+    const deliveryAddress = b.deliveryAddress || dropLoc;
+    const pickupPincode = b.pickupPincode || '';
+    const deliveryPincode = b.deliveryPincode || '';
+    const pickupDate = b.pickupDate || new Date().toISOString().split('T')[0];
+    const pickupTime = b.pickupTime || '10:00';
+    const goodsType = b.goodsType || b.goodsDescription || 'Commercial Cargo';
+    const goodsCategory = b.goodsCategory || 'Industrial & Heavy Commercial';
+    const cargoWeight = b.cargoWeight || `${b.weightKg || 1000} kg`;
+    const consignmentValue = parseFloat(b.consignmentValue) || 500000;
+    const ewayBillNumber = b.ewayBillNumber || `EWB-${Math.floor(100000000000 + Math.random() * 900000000000)}`;
+    const distanceKm = parseFloat(b.distanceKm) || 35;
+    const weightKg = parseFloat(b.weightKg) || 1000;
+    const weightTons = parseFloat(b.weightTons) || (weightKg / 1000);
+    const totalPrice = parseFloat(b.totalPrice || b.totalFreight) || 2000;
+    const advancePaid = parseFloat(b.advancePaid || b.advancePayable) || Math.round(totalPrice * 0.3);
+    const remainingBalance = totalPrice - advancePaid;
+    const payMethod = b.payMethod || 'Advance Paid (UPI / Online)';
+    const status = b.status || 'Advance Paid - Ready to Dispatch';
+
+    await prismaAny.$executeRawUnsafe(`
+      INSERT OR REPLACE INTO CarrierBooking (
+        id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
+        senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
+        pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
+        pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
+        distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
+      senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
+      pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
+      pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
+      distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
+    );
+
+    // Automatically set vehicle availability to 0 (On Trip / Already Booked) and save bookingDetails
+    const bookingJson = JSON.stringify({
+      id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
+      senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
+      pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
+      pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
+      distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
+    });
+
+    if (vehicleId || vehicleReg || vehicleName) {
+      await prismaAny.$executeRawUnsafe(`
+        UPDATE CarrierVehicle 
+        SET isAvailable = 0, bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP 
+        WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ? OR LOWER(name) LIKE ?
+      `, bookingJson, vehicleId, vehicleReg.toLowerCase(), vehicleReg.toLowerCase(), vehicleName.toLowerCase(), `%${vehicleName.toLowerCase()}%`);
+    }
+
+    // Auto-dispatch business notification
+    try {
+      addBusinessNotification({
+        type: 'carrier_booking',
+        badge: 'New Carrier Booking',
+        title: `${customerName} booked ${vehicleName}`,
+        customerName,
+        category: 'Commercial Freight',
+        vehicleName,
+        vehiclePlate: vehicleReg,
+        date: pickupDate,
+        time: pickupTime,
+        bookingId: id
+      });
+    } catch (e) { }
+
+    res.status(201).json({
+      success: true,
+      message: 'Carrier booking created successfully',
+      booking: {
+        id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
+        senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
+        pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
+        pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
+        distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
+      }
+    });
+  } catch (error: any) {
+    console.error('Error creating carrier booking:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PATCH complete ride / trip & dispatch notifications (Must be placed before /:id)
+router.patch('/bookings/:id/complete', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const { id } = req.params;
+    const { driverName, driverPhone, assignedBay } = req.body;
+
+    const existing: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM CarrierBooking WHERE id = ?`, id);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    const booking = existing[0];
+    const now = new Date().toISOString();
+
+    await prismaAny.$executeRawUnsafe(`
+      UPDATE CarrierBooking 
+      SET status = 'Ride Completed / Goods Delivered',
+          driverName = COALESCE(?, driverName),
+          driverPhone = COALESCE(?, driverPhone),
+          assignedBay = COALESCE(?, assignedBay),
+          completedAt = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, driverName || null, driverPhone || null, assignedBay || null, id);
+
+    // Reset carrier vehicle back to Available (isAvailable = 1, status = 'Available') so it shows up for user booking again
+    const vName = (booking.vehicleName || '').toLowerCase();
+    const vReg = (booking.vehicleReg || '').toLowerCase();
+    await prismaAny.$executeRawUnsafe(`
+      UPDATE CarrierVehicle 
+      SET isAvailable = 1, status = 'Available', bookingDetails = NULL, updatedAt = CURRENT_TIMESTAMP 
+      WHERE (id IS NOT NULL AND id = ?) 
+         OR (plate IS NOT NULL AND LOWER(plate) = ?) 
+         OR (regId IS NOT NULL AND LOWER(regId) = ?) 
+         OR (name IS NOT NULL AND LOWER(name) = ?)
+         OR (name IS NOT NULL AND ? != '' AND LOWER(name) LIKE ?)
+    `, booking.vehicleId || '', vReg, vReg, vName, vName, `%${vName}%`);
+
+    res.json({
+      success: true,
+      message: 'Ride confirmed completed. Delivery notifications sent to sender and receiver mobiles.',
+      notification: {
+        senderMobile: booking.customerPhone,
+        receiverMobile: booking.receiverPhone,
+        bookingId: booking.id,
+        vehicleName: booking.vehicleName,
+        status: 'Goods Successfully Delivered & Confirmed by Carrier Owner',
+        timestamp: now
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // GET single vehicle by ID
 router.get('/:id', async (req: Request, res: Response) => {
   await ensureCarrierTables();
@@ -485,6 +680,115 @@ router.post('/', async (req: Request, res: Response) => {
   }
 });
 
+// PATCH /api/carriers/:vehicleId/release (Atomic release of both booking and vehicle status)
+router.patch('/:vehicleId/release', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const rawId = String(req.params.vehicleId);
+    const vehicleId = decodeURIComponent(rawId).trim();
+    const vehicleIdLower = vehicleId.toLowerCase();
+    const { bookingId } = req.body;
+
+    // 1. Mark the active booking as Completed
+    if (bookingId) {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierBooking SET status = 'Completed', completedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+        bookingId
+      );
+    } else {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierBooking SET status = 'Completed', completedAt = CURRENT_TIMESTAMP WHERE (vehicleId = ? OR LOWER(vehicleReg) = ? OR LOWER(vehicleName) = ?) AND status != 'Completed'`,
+        vehicleId, vehicleIdLower, vehicleIdLower
+      );
+    }
+
+    // 2. Release the vehicle back to Available
+    await prismaAny.$executeRawUnsafe(
+      `UPDATE CarrierVehicle SET isAvailable = 1, status = 'Available', bookingDetails = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      vehicleId, vehicleIdLower, vehicleIdLower, vehicleIdLower
+    );
+
+    const updated: any[] = await prismaAny.$queryRawUnsafe(
+      `SELECT * FROM CarrierVehicle WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      vehicleId, vehicleIdLower, vehicleIdLower, vehicleIdLower
+    );
+
+    res.json({ success: true, message: 'Vehicle successfully released to Available', vehicle: updated[0] || null });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /api/carriers/:vehicleId/complete-trip (Mirroring rental's complete-trip endpoint)
+router.post('/:vehicleId/complete-trip', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const rawId = String(req.params.vehicleId);
+    const vehicleId = decodeURIComponent(rawId).trim();
+    const vehicleIdLower = vehicleId.toLowerCase();
+    const { bookingId } = req.body || {};
+
+    if (bookingId) {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierBooking SET status = 'Completed', completedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+        bookingId
+      );
+    } else {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierBooking SET status = 'Completed', completedAt = CURRENT_TIMESTAMP WHERE (vehicleId = ? OR LOWER(vehicleReg) = ? OR LOWER(vehicleName) = ?) AND status != 'Completed'`,
+        vehicleId, vehicleIdLower, vehicleIdLower
+      );
+    }
+
+    await prismaAny.$executeRawUnsafe(
+      `UPDATE CarrierVehicle SET isAvailable = 1, status = 'Available', bookingDetails = NULL, updatedAt = CURRENT_TIMESTAMP WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      vehicleId, vehicleIdLower, vehicleIdLower, vehicleIdLower
+    );
+
+    const updated: any[] = await prismaAny.$queryRawUnsafe(
+      `SELECT * FROM CarrierVehicle WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      vehicleId, vehicleIdLower, vehicleIdLower, vehicleIdLower
+    );
+
+    res.json({ success: true, message: 'Trip completed and vehicle released to Available', vehicle: updated[0] || null });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// PATCH vehicle by ID (availability, status, bookingDetails)
+router.patch('/:id', async (req: Request, res: Response) => {
+  await ensureCarrierTables();
+  try {
+    const id = String(req.params.id);
+    const idLower = id.toLowerCase();
+    const { isAvailable, status, bookingDetails } = req.body;
+    const bJson = bookingDetails ? (typeof bookingDetails === 'string' ? bookingDetails : JSON.stringify(bookingDetails)) : null;
+    const availVal = isAvailable !== undefined ? (isAvailable ? 1 : 0) : null;
+
+    if (availVal !== null && bJson !== null) {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierVehicle SET isAvailable = ?, bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? OR LOWER(plate) = ? OR LOWER(name) = ? OR LOWER(regId) = ?`,
+        availVal, bJson, id, idLower, idLower, idLower
+      );
+    } else if (availVal !== null) {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierVehicle SET isAvailable = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? OR LOWER(plate) = ? OR LOWER(name) = ? OR LOWER(regId) = ?`,
+        availVal, id, idLower, idLower, idLower
+      );
+    } else if (bJson !== null) {
+      await prismaAny.$executeRawUnsafe(
+        `UPDATE CarrierVehicle SET bookingDetails = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ? OR LOWER(plate) = ? OR LOWER(name) = ? OR LOWER(regId) = ?`,
+        bJson, id, idLower, idLower, idLower
+      );
+    }
+
+    res.json({ success: true, message: 'Carrier vehicle updated successfully' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // PATCH toggle vehicle availability
 router.patch('/:id/availability', async (req: Request, res: Response) => {
   await ensureCarrierTables();
@@ -514,170 +818,42 @@ router.patch('/:id/availability', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE vehicle
-router.delete('/:id', async (req: Request, res: Response) => {
+// DELETE vehicle by query (?id=... or ?plate=... or ?all=true)
+router.delete('/', async (req: Request, res: Response) => {
   await ensureCarrierTables();
   try {
-    const { id } = req.params;
-    await prismaAny.$executeRawUnsafe(`DELETE FROM CarrierVehicle WHERE id = ?`, id);
+    if (req.query.all === 'true') {
+      await prismaAny.$executeRawUnsafe(`DELETE FROM CarrierVehicle`);
+      return res.json({ success: true, message: 'All vehicles removed from fleet' });
+    }
+    const rawId = String(req.query.id || req.query.plate || req.query.regId || '');
+    if (!rawId) {
+      return res.status(400).json({ success: false, message: 'Vehicle ID or plate required' });
+    }
+    const idDecoded = decodeURIComponent(rawId).trim();
+    const idLower = idDecoded.toLowerCase();
+    await prismaAny.$executeRawUnsafe(
+      `DELETE FROM CarrierVehicle WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      idDecoded, idLower, idLower, idLower
+    );
     res.json({ success: true, message: 'Vehicle removed from fleet' });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// POST create carrier booking
-router.post('/bookings', async (req: Request, res: Response) => {
+// DELETE vehicle
+router.delete('/:id', async (req: Request, res: Response) => {
   await ensureCarrierTables();
   try {
-    const b = req.body;
-    const id = b.id || b.bookingId || `CRG-BK-${Date.now().toString().slice(-6)}`;
-    const vehicleId = b.vehicleId || '';
-    const vehicleName = b.vehicleName || 'Commercial Cargo Carrier';
-    const vehicleReg = b.vehicleReg || b.plate || 'IMO 234';
-    const mode = b.mode || 'ship';
-    const customerName = b.customerName || b.senderName || 'Valued Customer';
-    const customerPhone = b.customerPhone || b.senderPhone || b.senderMobile || '+91 98000 00000';
-    const senderType = b.senderType || 'business';
-    const senderGstin = b.senderGstin || '';
-    const senderEmail = b.senderEmail || '';
-    const receiverName = b.receiverName || 'Consignee Logistics';
-    const receiverPhone = b.receiverPhone || b.receiverMobile || '+91 98765 43210';
-    const receiverType = b.receiverType || 'business';
-    const receiverGstin = b.receiverGstin || '';
-    const pickup = b.pickup || 'Pickup Location';
-    const dropLoc = b.dropLoc || b.drop || b.delivery || 'Delivery Location';
-    const pickupAddress = b.pickupAddress || pickup;
-    const deliveryAddress = b.deliveryAddress || dropLoc;
-    const pickupPincode = b.pickupPincode || '';
-    const deliveryPincode = b.deliveryPincode || '';
-    const pickupDate = b.pickupDate || new Date().toISOString().split('T')[0];
-    const pickupTime = b.pickupTime || '10:00';
-    const goodsType = b.goodsType || b.goodsDescription || 'Commercial Cargo';
-    const goodsCategory = b.goodsCategory || 'Industrial & Heavy Commercial';
-    const cargoWeight = b.cargoWeight || `${b.weightKg || 1000} kg`;
-    const consignmentValue = parseFloat(b.consignmentValue) || 500000;
-    const ewayBillNumber = b.ewayBillNumber || `EWB-${Math.floor(100000000000 + Math.random() * 900000000000)}`;
-    const distanceKm = parseFloat(b.distanceKm) || 35;
-    const weightKg = parseFloat(b.weightKg) || 1000;
-    const weightTons = parseFloat(b.weightTons) || (weightKg / 1000);
-    const totalPrice = parseFloat(b.totalPrice || b.totalFreight) || 2000;
-    const advancePaid = parseFloat(b.advancePaid || b.advancePayable) || Math.round(totalPrice * 0.3);
-    const remainingBalance = totalPrice - advancePaid;
-    const payMethod = b.payMethod || 'Advance Paid (UPI / Online)';
-    const status = b.status || 'Advance Paid - Ready to Dispatch';
-
-    await prismaAny.$executeRawUnsafe(`
-      INSERT INTO CarrierBooking (
-        id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
-        senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
-        pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
-        pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
-        distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
-      senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
-      pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
-      pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
-      distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
+    const rawId = String(req.params.id);
+    const idDecoded = decodeURIComponent(rawId).trim();
+    const idLower = idDecoded.toLowerCase();
+    await prismaAny.$executeRawUnsafe(
+      `DELETE FROM CarrierVehicle WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?`,
+      idDecoded, idLower, idLower, idLower
     );
-
-    // Automatically set vehicle availability to 0 (On Trip / Already Booked)
-    if (vehicleId || vehicleReg) {
-      await prismaAny.$executeRawUnsafe(`
-        UPDATE CarrierVehicle 
-        SET isAvailable = 0, updatedAt = CURRENT_TIMESTAMP 
-        WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ? OR LOWER(name) = ?
-      `, vehicleId, vehicleReg.toLowerCase(), vehicleReg.toLowerCase(), vehicleName.toLowerCase());
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Carrier booking created successfully',
-      booking: {
-        id, vehicleId, vehicleName, vehicleReg, mode, customerName, customerPhone,
-        senderType, senderGstin, senderEmail, receiverName, receiverPhone, receiverType, receiverGstin,
-        pickup, dropLoc, pickupAddress, deliveryAddress, pickupPincode, deliveryPincode,
-        pickupDate, pickupTime, goodsType, goodsCategory, cargoWeight, consignmentValue, ewayBillNumber,
-        distanceKm, weightKg, weightTons, totalPrice, advancePaid, remainingBalance, payMethod, status
-      }
-    });
-  } catch (error: any) {
-    console.error('Error creating carrier booking:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// GET all carrier bookings
-router.get('/bookings', async (req: Request, res: Response) => {
-  await ensureCarrierTables();
-  try {
-    const { vehicleId } = req.query;
-    let query = `SELECT * FROM CarrierBooking`;
-    let params: any[] = [];
-    if (vehicleId) {
-      query += ` WHERE vehicleId = ?`;
-      params.push(vehicleId);
-    }
-    query += ` ORDER BY createdAt DESC`;
-
-    const bookings: any[] = await prismaAny.$queryRawUnsafe(query, ...params);
-    res.json({ success: true, count: bookings.length, bookings });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// PATCH complete ride / trip & dispatch notifications
-router.patch('/bookings/:id/complete', async (req: Request, res: Response) => {
-  await ensureCarrierTables();
-  try {
-    const { id } = req.params;
-    const { driverName, driverPhone, assignedBay } = req.body;
-
-    const existing: any[] = await prismaAny.$queryRawUnsafe(`SELECT * FROM CarrierBooking WHERE id = ?`, id);
-    if (!existing || existing.length === 0) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
-
-    const booking = existing[0];
-    const now = new Date().toISOString();
-
-    await prismaAny.$executeRawUnsafe(`
-      UPDATE CarrierBooking 
-      SET status = 'Ride Completed / Goods Delivered',
-          driverName = COALESCE(?, driverName),
-          driverPhone = COALESCE(?, driverPhone),
-          assignedBay = COALESCE(?, assignedBay),
-          completedAt = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, driverName || null, driverPhone || null, assignedBay || null, id);
-
-    // Reset carrier vehicle back to Available (isAvailable = 1) so it shows up for user booking again
-    if (booking.vehicleId || booking.vehicleReg) {
-      await prismaAny.$executeRawUnsafe(`
-        UPDATE CarrierVehicle 
-        SET isAvailable = 1, updatedAt = CURRENT_TIMESTAMP 
-        WHERE id = ? OR LOWER(plate) = ? OR LOWER(regId) = ?
-      `, booking.vehicleId, (booking.vehicleReg || '').toLowerCase(), (booking.vehicleReg || '').toLowerCase());
-    }
-
-    // Mock SMS / WhatsApp notification triggered
-    const notificationPayload = {
-      senderMobile: booking.customerPhone,
-      receiverMobile: booking.receiverPhone,
-      bookingId: booking.id,
-      vehicleName: booking.vehicleName,
-      status: 'Goods Successfully Delivered & Confirmed by Carrier Owner',
-      timestamp: now
-    };
-
-    res.json({
-      success: true,
-      message: 'Ride confirmed completed. Delivery notifications sent to sender and receiver mobiles.',
-      notification: notificationPayload
-    });
+    res.json({ success: true, message: 'Vehicle removed from fleet' });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
